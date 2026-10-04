@@ -1,0 +1,83 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) + Archetype 5 (Luxury) Hybrid",
+  "mood": "Premium, analytical, authoritative, precise",
+  "colors": {
+    "background": "#0F172A",
+    "surface": "#1E293B",
+    "surface_hover": "#334155",
+    "border": "rgba(255, 255, 255, 0.05)",
+    "primary": "#8B5CF6",
+    "primary_glow": "rgba(139, 92, 246, 0.3)",
+    "chart_blue": "#3B82F6",
+    "chart_teal": "#14B8A6",
+    "warning_orange": "#F97316",
+    "success_emerald": "#10B981",
+    "danger_red": "#EF4444",
+    "text_main": "#F8FAFC",
+    "text_muted": "#94A3B8"
+  },
+  "typography": {
+    "headings_font": "Sora",
+    "body_font": "Manrope",
+    "mono_font": "JetBrains Mono",
+    "hierarchy": {
+      "h1": "text-3xl md:text-4xl tracking-tight font-semibold text-slate-50",
+      "h2": "text-2xl tracking-tight font-medium text-slate-100",
+      "h3": "text-lg font-medium text-slate-200",
+      "metric": "text-5xl font-mono tracking-tighter text-white",
+      "body": "text-sm text-slate-400",
+      "label": "text-xs font-semibold tracking-widest uppercase text-slate-500"
+    }
+  },
+  "spacing_and_layout": {
+    "dashboard_grid": "grid-cols-1 md:grid-cols-4 gap-6",
+    "card_padding": "p-6",
+    "radius": "rounded-xl",
+    "sidebar_width": "w-64"
+  },
+  "components": {
+    "card": "bg-slate-800/50 backdrop-blur-xl border border-white/5 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] p-6 transition-all duration-300",
+    "signature_card": "relative bg-slate-800/80 backdrop-blur-2xl border border-violet-500/30 rounded-xl p-6 shadow-[0_0_30px_rgba(139,92,246,0.15)]",
+    "button_primary": "bg-violet-600 hover:bg-violet-500 text-white rounded-lg px-4 py-2 text-sm font-medium transition-all shadow-[0_0_15px_rgba(139,92,246,0.3)] hover:shadow-[0_0_25px_rgba(139,92,246,0.5)]",
+    "button_secondary": "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-white/10 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+    "input": "bg-slate-900/50 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:ring-2 focus:ring-violet-500 focus:border-transparent outline-none transition-all w-full",
+    "badge_active": "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded text-xs font-mono uppercase tracking-wider",
+    "badge_review": "bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-1 rounded text-xs font-mono uppercase tracking-wider",
+    "badge_complete": "bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-1 rounded text-xs font-mono uppercase tracking-wider",
+    "table_header": "text-xs font-semibold tracking-widest uppercase text-slate-500 border-b border-white/5 pb-3 text-left",
+    "table_row": "border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+  },
+  "pages": {
+    "dashboard": {
+      "layout": "Sidebar on left, main content area taking remaining width",
+      "top_bar": "Search input, Notifications bell, Profile avatar",
+      "kpi_row": "4 metrics cards (Total Decisions, Active, Completed, Avg Confidence). Each with JetBrains Mono numbers, and trend indicators (green/red deltas).",
+      "signature_row": "Grid with 4 columns. Col-span-1: Decision Health Score (large glowing 87/100, circular progress, 4 factor checks with green/orange dots). Col-span-3: Decision Trends Multi-series Line Chart with toggle for Daily/Weekly/Monthly.",
+      "analytics_row": "Grid with 4 columns. Col-span-2: Decision Categories Bar Chart (Orange/Purple colors). Col-span-2: Risk Distribution Donut Chart (Glowing inner shadow).",
+      "bottom_row": "Grid with 4 columns. Col-span-3: Recent Decisions Table. Col-span-1: AI Recommendations List (3 stacked cards with light bulb icon and action button)."
+    },
+    "decisions_list": "Full page data table with advanced filters (Status, Risk, Category) and pagination.",
+    "new_decision": "Multi-step form wizard or grid layout form with inputs for Objective, Category, Stakeholders, Deadline, Context.",
+    "ai_chat": "Chat interface with message bubbles. AI messages in slate-800, user messages in violet-600. Input box at bottom.",
+    "analytics": "Deeper full-page charts grid. Recharts integration.",
+    "sources": "Grid of connected data sources cards (CRM, ERP, Web Analytics) with sync status indicators.",
+    "settings": "Vertical tabs layout (Profile, Notifications, Security, API Keys).",
+    "about": "Simple markdown-style content page with version info and team.",
+    "auth": "Login/Register split layout. Left side abstract data viz image, right side clean minimalist form."
+  },
+  "images": {
+    "login_bg": "https://images.unsplash.com/photo-1644088379091-d574269d422f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhcmslMjBkYXRhJTIwdmlzdWFsaXphdGlvbnxlbnwwfHx8fDE3ODEyMTAyNDh8MA&ixlib=rb-4.1.0&q=85",
+    "profile_avatar": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHByb2ZpbGUlMjBhdmF0YXJ8ZW58MHx8fHwxNzgxMjEwMjQ4fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": [
+    "Ensure all interactive elements and key informational areas include a `data-testid` attribute (e.g., `data-testid=\"login-submit-button\"`).",
+    "Use standard `lucide-react` for icons.",
+    "Use Shadcn UI components heavily customized to match the provided CSS classes in this JSON.",
+    "Use Recharts for all charts. Style Recharts tooltips with glassmorphism to match cards.",
+    "Do not use generic Inter font. Apply Sora for headings, Manrope for body, JetBrains Mono for metrics.",
+    "Ensure the Sidebar navigation contains Dashboard, Decisions, New Decision, AI Chat, Analytics, Sources, Settings, About.",
+    "The Decision Health Score card must be the focal point of the dashboard. Use a heavier glow and border treatment as specified in signature_card.",
+    "Do not use placeholder image URLs like via.placeholder.com. Only use the ones provided in this document."
+  ]
+}
