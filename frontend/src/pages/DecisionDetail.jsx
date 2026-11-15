@@ -11,8 +11,11 @@ import {
   Paperclip,
   X,
   AlertTriangle,
+  Sparkles,
+  RefreshCw,
 } from "lucide-react";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, limitInfo } from "@/lib/api";
+import Markdown from "@/components/Markdown";
 
 const CATS = [
   ["business_strategy", "Business Strategy"],
@@ -48,6 +51,76 @@ function fmtBytes(b) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const LIST_BLOCKS = [
+  ["pros", "Pros", "text-emerald-300", "border-emerald-500/30 bg-emerald-500/5"],
+  ["cons", "Cons", "text-rose-300", "border-rose-500/30 bg-rose-500/5"],
+  ["risks", "Risks", "text-orange-300", "border-orange-500/30 bg-orange-500/5"],
+  ["next_steps", "Next steps", "text-violet-300", "border-violet-500/30 bg-violet-500/5"],
+];
+
+function AnalysisPanel({ analysis, error, onRetry }) {
+  if (error) {
+    return (
+      <div
+        role="alert"
+        data-testid="analysis-error"
+        className="mt-4 card p-4 border border-rose-500/30 bg-rose-500/5"
+      >
+        <p className="text-sm text-rose-200 flex items-center gap-2">
+          <AlertTriangle size={14} /> {error}
+        </p>
+        <button onClick={onRetry} className="btn btn-secondary mt-3" data-testid="analysis-retry">
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (!analysis) return null;
+
+  return (
+    <section className="mt-5 pt-4 border-t border-white/5" data-testid="analysis-panel">
+      <div className="label-eyebrow mb-3 flex items-center gap-2">
+        <Sparkles size={13} /> AI Analysis
+      </div>
+
+      {analysis.executive_summary && (
+        <div className="mb-4">
+          <div className="font-sora text-sm font-semibold text-white mb-1">Executive summary</div>
+          <Markdown className="text-slate-300">{analysis.executive_summary}</Markdown>
+        </div>
+      )}
+
+      {analysis.recommendation && (
+        <div
+          className="mb-4 p-3 rounded-lg border border-violet-500/30 bg-violet-500/10"
+          data-testid="analysis-recommendation"
+        >
+          <div className="font-sora text-sm font-semibold text-violet-200 mb-1">Recommendation</div>
+          <Markdown className="text-slate-200">{analysis.recommendation}</Markdown>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {LIST_BLOCKS.map(([key, label, textCls, boxCls]) => {
+          const items = analysis[key];
+          if (!Array.isArray(items) || items.length === 0) return null;
+          return (
+            <div key={key} className={`p-3 rounded-lg border ${boxCls}`} data-testid={`analysis-${key}`}>
+              <div className={`font-sora text-sm font-semibold ${textCls} mb-1.5`}>{label}</div>
+              <ul className="space-y-1 text-[13px] text-slate-300 list-disc pl-4 marker:text-slate-500">
+                {items.map((it, i) => (
+                  <li key={i}>{it}</li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default function DecisionDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -56,7 +129,10 @@ export default function DecisionDetail() {
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [uploadLimit, setUploadLimit] = useState(null);
   const [loadError, setLoadError] = useState("");
+  const [analysing, setAnalysing] = useState(false);
+  const [analysisErr, setAnalysisErr] = useState(null);
 
   const [comments, setComments] = useState([]);
   const [activity, setActivity] = useState([]);
@@ -128,6 +204,7 @@ export default function DecisionDetail() {
     if (!file) return;
     setUploading(true);
     setErr("");
+    setUploadLimit(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -136,6 +213,7 @@ export default function DecisionDetail() {
       });
       load();
     } catch (e) {
+      setUploadLimit(limitInfo(e));
       setErr(formatApiError(e.response?.data?.detail) || e.message);
     } finally {
       setUploading(false);
@@ -147,6 +225,20 @@ export default function DecisionDetail() {
     if (!window.confirm("Delete this attachment?")) return;
     await api.delete(`/decisions/${id}/attachments/${attId}`);
     load();
+  }
+
+  async function runAnalysis() {
+    if (analysing) return;
+    setAnalysing(true);
+    setAnalysisErr(null);
+    try {
+      const r = await api.post(`/decisions/${id}/analyse`, {});
+      setDecision((d) => ({ ...d, ai_analysis: r.data.ai_analysis }));
+    } catch (e) {
+      setAnalysisErr(formatApiError(e.response?.data?.detail));
+    } finally {
+      setAnalysing(false);
+    }
   }
 
   if (!decision || !form) {
@@ -199,6 +291,15 @@ export default function DecisionDetail() {
             </button>
           )}
           <button
+            className="btn btn-secondary disabled:opacity-60"
+            onClick={runAnalysis}
+            disabled={analysing}
+            data-testid="analyse-btn"
+          >
+            {analysing ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            {analysing ? "Analysing…" : decision.ai_analysis ? "Re-analyse" : "Analyse with AI"}
+          </button>
+          <button
             className="btn btn-ghost hover:text-rose-400"
             onClick={onDelete}
             data-testid="delete-decision-btn"
@@ -224,11 +325,21 @@ export default function DecisionDetail() {
                 <RiskPill risk={decision.risk} />
               </div>
             </div>
-            <p className="text-slate-300 text-sm leading-relaxed mt-3 whitespace-pre-wrap">
-              {decision.description || (
-                <span className="italic text-slate-500">No description.</span>
-              )}
-            </p>
+            {decision.description ? (
+              <div className="mt-3 text-slate-300 text-sm" data-testid="decision-description">
+                <Markdown className="text-slate-300">{decision.description}</Markdown>
+              </div>
+            ) : (
+              <p className="text-slate-300 text-sm leading-relaxed mt-3 italic text-slate-500">
+                No description.
+              </p>
+            )}
+            <AnalysisPanel
+              analysis={decision.ai_analysis}
+              error={analysisErr}
+              onRetry={runAnalysis}
+            />
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 pt-4 border-t border-white/5">
               <div>
                 <div className="label-eyebrow">Confidence</div>
@@ -430,6 +541,26 @@ export default function DecisionDetail() {
               />
             </label>
           </div>
+          {uploadLimit && (
+            <div
+              data-testid="dd-upload-limit"
+              className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100"
+            >
+              <p>
+                Used {uploadLimit.used} of {uploadLimit.limit} documents
+                {uploadLimit.reset_at ? " this month" : ""}.
+              </p>
+              {uploadLimit.upgrade_tier && (
+                <Link
+                  to="/pricing"
+                  className="mt-2 inline-block text-xs font-semibold underline underline-offset-2 hover:text-amber-200"
+                  data-testid="dd-upload-limit-upgrade"
+                >
+                  See upgrade options
+                </Link>
+              )}
+            </div>
+          )}
           {attachments.length === 0 && (
             <div className="text-sm text-slate-500 py-6 text-center" data-testid="no-attachments">
               No documents yet. Upload PDF, DOCX, TXT, or MD (max 10 MB).

@@ -171,6 +171,24 @@ class TestComments:
 
 # ---------------- Attachments ----------------
 class TestAttachments:
+    @pytest.fixture(autouse=True, scope="module")
+    def _cleanup(self, admin_session, admin_decision):
+        """Remove attachments this class leaves behind.
+
+        Module-scoped, not function-scoped: the tests below assert on files created by
+        earlier tests in the same class, so a per-test sweep would delete them before the
+        assertions run. Without the final sweep they survive the run and keep consuming
+        the shared admin account's monthly document quota, which makes the suite fail once
+        five have piled up.
+        """
+        yield
+        r = admin_session.get(f"{API}/decisions/{admin_decision}/attachments", timeout=15)
+        if r.status_code == 200:
+            for a in r.json():
+                admin_session.delete(
+                    f"{API}/decisions/{admin_decision}/attachments/{a['id']}", timeout=15
+                )
+
     def test_upload_txt(self, admin_session, admin_decision):
         files = {"file": ("test.txt", b"hello iteration 2 attachment", "text/plain")}
         r = admin_session.post(

@@ -106,6 +106,9 @@ htmlcov/
 # control. The 12 sample files that shipped with the project are un-ignored by exact
 # name so they stay tracked. Add new fixtures here explicitly if you want them kept.
 uploads/*
+# Isolated upload directory used when the backend runs against the test database
+# (UPLOAD_DIR=uploads_test). Wiped by the test suite; never tracked.
+uploads_test/
 frontend/build/
 build/
 !.gitkeep

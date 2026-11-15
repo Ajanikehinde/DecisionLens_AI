@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api, { formatApiError } from "@/lib/api";
+import api, { formatApiError, limitInfo } from "@/lib/api";
 import { Save, Upload, FileText, X } from "lucide-react";
 
 const CATS = [
@@ -45,6 +45,7 @@ export default function NewDecision() {
   });
   const [pendingFiles, setPendingFiles] = useState([]);
   const [err, setErr] = useState("");
+  const [limit, setLimit] = useState(null);
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
 
@@ -89,7 +90,10 @@ export default function NewDecision() {
   async function submit(e) {
     e.preventDefault();
     setErr("");
+    setLimit(null);
     setSaving(true);
+
+    let newId = null;
     try {
       const r = await api.post("/decisions", {
         ...form,
@@ -99,21 +103,39 @@ export default function NewDecision() {
           : [],
         deadline: form.deadline || null,
       });
-      const newId = r.data.id;
-      // upload pending files sequentially
-      for (const f of pendingFiles) {
-        const fd = new FormData();
-        fd.append("file", f);
+      newId = r.data.id;
+    } catch (e) {
+      // The decision was rejected, so nothing was written at all.
+      setLimit(limitInfo(e));
+      setErr(formatApiError(e.response?.data?.detail) || e.message);
+      setSaving(false);
+      return;
+    }
+
+    // From here the decision exists. An upload quota wall must not strand it, so the
+    // user is still sent to the decision and told which files did not make it.
+    const rejected = [];
+    for (const f of pendingFiles) {
+      const fd = new FormData();
+      fd.append("file", f);
+      try {
         await api.post(`/decisions/${newId}/attachments`, fd, {
           headers: { "Content-Type": "multipart/form-data" },
         });
+      } catch (e) {
+        rejected.push(f.name);
+        setLimit(limitInfo(e));
+        break;
       }
-      navigate(`/decisions/${newId}`);
-    } catch (e) {
-      setErr(formatApiError(e.response?.data?.detail) || e.message);
-    } finally {
-      setSaving(false);
     }
+    if (rejected.length) {
+      setErr(
+        `Decision saved, but these files were not uploaded: ${rejected.join(", ")}. ` +
+          `You can add them from the decision page.`,
+      );
+    }
+    setSaving(false);
+    navigate(`/decisions/${newId}`);
   }
 
   return (
@@ -312,6 +334,27 @@ export default function NewDecision() {
             data-testid="nd-error"
           >
             {err}
+          </div>
+        )}
+
+        {limit && (
+          <div
+            data-testid="nd-limit"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100"
+          >
+            <p>
+              Used {limit.used} of {limit.limit} {limit.resource === "documents" ? "documents" : "decisions"}
+              {limit.reset_at ? ` this month` : ""}.
+            </p>
+            {limit.upgrade_tier && (
+              <button
+                type="button"
+                onClick={() => navigate("/pricing")}
+                className="mt-2 text-xs font-semibold underline underline-offset-2 hover:text-amber-200"
+              >
+                See upgrade options
+              </button>
+            )}
           </div>
         )}
 

@@ -60,34 +60,74 @@ These are deliberate and load-bearing. Don't "simplify" them back.
 
 - **Auth cookies follow the environment.** `ENVIRONMENT=development|dev|local` → `Secure` omitted, `SameSite=lax`. Anything else → `Secure` + `SameSite=None`. A `Secure` cookie over plain `http://localhost` is silently dropped by the browser, which yields a successful login followed by 401 on every subsequent request. `COOKIE_SECURE`/`COOKIE_SAMESITE` override.
 - `clear_auth_cookies` must keep the **same** attributes as `set_auth_cookies`, otherwise logout does not delete the cookies.
-- **`/api/chat` never fabricates a reply.** No key → `503 llm_not_configured` (checked before any DB write). Provider error → `503 llm_unavailable`. Empty response → `503 llm_empty_response`. Do not reintroduce a canned fallback string returned as `200`.
+- **`/api/chat` never fabricates a reply.** No key → `503 llm_not_configured` (checked before any DB write). Provider error → `503 llm_unavailable`. Empty response → `503 llm_empty_response`. Reply stored but unacknowledged → `503 persistence_failed`. Do not reintroduce a canned fallback string returned as `200`.
+- **Every user chat message carries a status**, written by `_set_message_status` as a compare-and-set (the filter pins `{"id": …, "status": current}` and a `matched_count != 1` raises), never as a read followed by a write:
+  - `pending` at insert → `processing` immediately before the provider call → `answered` or `failed`. `answered` is absolutely terminal. Stage 2 added exactly one edge, `failed → processing`, reachable only through `_retry_message`, so a client can retry the **same** message instead of creating a duplicate; `pending` still cannot skip `processing`, and `_ALLOWED_TRANSITIONS` rejects every other edge.
+  - `answered` is written **only after** the genuine Gemini reply is persisted, and links to it via `reply_message_id`. Never mark `answered` before the insert, and never infer a pair from adjacency.
+  - `failed` records a fixed `error_code` (`llm_unavailable`, `llm_empty_response`, `persistence_failed`) and leaves **no** assistant row. Exception text is logged, never stored — provider errors can quote user content.
+- **Persistence failures stay observable.** If the reply insert succeeds but the `answered` write fails, `_persist_answer` deletes the reply and the request fails `503 persistence_failed` — never `200`. That rollback is **best-effort**: if the delete also fails, the orphan assistant row survives, inert because replay joins by id. `_mark_failed` is the only status writer allowed to swallow errors, so bookkeeping cannot mask the real cause. A request that dies between the two writes leaves the row in `processing`, and nothing recovers it yet.
+- **Replay uses verified completed pairs only.** `_replayable_history` requires `status == "answered"` **and** a matching assistant row found by `reply_message_id` with non-empty content. No positional assumptions — the old `prior[:-1]` hack is gone. History is still replayed explicitly from `chat_messages`, capped by `CHAT_HISTORY_TURNS`, roles mapped `assistant`→Gemini's `model`; do not reintroduce provider-side session state, the request must stay reproducible from Mongo alone. This filter is the only place turns are dropped: the history endpoints still return them.
+- **Legacy messages with no `status` report `unknown` and are not replayed.** `_serialize_chat_message` maps absence to `"unknown"` at the read boundary; stored documents are never rewritten or backfilled. The pre-503-fix code could return fabricated text as a `200`, so an old assistant row is not evidence of a genuine exchange and must not teach the model to imitate it.
+- **Idempotency is opt-in, per user, and enforced by the database.** `ChatIn.request_id` is an `Optional[UUID]` (junk is a 422, never a silent "no key"), so a client that omits it keeps the legacy behaviour exactly. The unique index `uniq_chat_request_per_user` on `(user_id, request_id)` is the authority — the `_load_request` read that precedes insertion is only a fast path, so two concurrent submissions still cannot create two rows. It is **partial** (`{"request_id": {"$type": "string"}}`) so pre-Stage-2 rows, which have no such field, neither collide nor block the build.
+- **The index is created and verified at startup, outside the seeding try/except.** `_ensure_chat_request_index` creates it, then asserts uniqueness, keys and partiality from `index_information()`; every failure raises, so the process refuses to serve chat without the constraint. Do not move the call inside a swallowed `try`.
+- **A repeat is resolved from the stored row before the key check and before the quota check.** `answered` → the stored reply is returned as a literal `{"session_id", "reply"}`, with no Gemini call and no quota charge, so an already-paid-for answer still replays during a provider outage and at the quota cap. `pending`/`processing` inside the lease → `409 request_in_flight` with `retry_after_ms` and a `lookup` hint. `failed` → retried in place while attempts remain, else `409 retry_exhausted`. Same id with a different message or a different **requested** session → `409 idempotency_conflict`.
+- **A repeat never inserts a second user message, so it cannot consume quota.** `_usage_count` derives usage by counting `role: "user"` rows in the month window and `_enforce_limit` is a pure read — that is why duplicate suppression costs nothing by construction. A **failed** turn still consumes one `ai_chats_per_month` message (`REFUND_CHAT_ON_LLM_FAILURE` stays `False`): Stage 2 changed how retries are counted, not how failures are billed.
+- **`requested_session_id` is stored separately from `session_id`.** It records what the client actually sent, so an interrupted *first* request (client sent `null`, server generated the id) can be retried with `null` without being mistaken for a session conflict — otherwise a dropped response on the very first message would leave the client permanently stuck. It is dropped from API responses.
+- **`attempt` is part of every retry-sensitive compare-and-set.** Status transitions, `_retry_message` and the reply acknowledgement all pin the attempt; `_attempt_filter` treats a missing counter as 1, so pre-Stage-2 rows stay retryable without a backfill. A worker resuming after its lease expired therefore cannot overwrite a newer attempt's outcome with stale text.
+- **The lease is a recovery heuristic, never proof the previous worker stopped.** `CHAT_ATTEMPT_LEASE_SECONDS` (180) is the age at which a `processing` row may be reclaimed through `failed → processing`, and a paused-but-alive worker is indistinguishable from a dead one; `MAX_CHAT_ATTEMPTS` (3) bounds the damage. Import fails if the lease is not longer than `GEMINI_TIMEOUT_S`. Honest limit: idempotency is at-most-once **persistence**, not at-most-once **computation** — a crash after Gemini returns but before the reply is inserted leaves `processing`, and the lease may re-dispatch it, costing one wasted upstream call but never a duplicate message, reply link or quota charge.
+- **An orphaned reply is never replayed as an answer.** `_reply_text_for` resolves only through `reply_message_id`, and the lookup route exposes a reply only when `status == "answered"`, so an assistant row left by a crash between the two writes stays inert — visible in history, linked to nothing. The reverse case, `answered` with a missing reply, is `409 request_unrecoverable`, never a fabricated `200`.
+- **`GET /api/chat/requests/{request_id}` is the recovery endpoint.** Scoped by user, so another account's id is a 404 rather than a 403; it returns `status`, `error_code`, `attempt`, `max_attempts`, `can_retry`, `session_id`, and the reply only when answered. This is how a client recovers a server-generated session id after a dropped response, and how it polls a `request_in_flight`.
+- **Stage 2 still omits quota refunds, atomic multi-document persistence and a background sweeper.** Insert-and-mark remains two writes, and nothing reclaims a stranded `processing` row until that request id is resubmitted. Changing any of these alters billing or retry semantics — get explicit approval first.
 - **The Gemini call is blocking `requests`, so it must stay inside `run_in_threadpool`.** Calling it directly from the async handler blocks the event loop and stalls every other request.
-- Chat history is replayed explicitly from `chat_messages` (capped by `CHAT_HISTORY_TURNS`, roles mapped `assistant`→Gemini's `model`). Do not reintroduce provider-side session state — the request must stay reproducible from Mongo alone.
 - **The Stripe webhook verifies signatures and refuses to run without `STRIPE_WEBHOOK_SECRET`** (503 if unset, 400 if the signature fails). Never add a path that trusts an unverified payload; it would let anyone grant themselves a paid tier. Access fields via `getattr`, since a `StripeObject` raises `AttributeError` on a missing key and `.get()` does not exist on it.
 - **There are no default seed passwords.** `ADMIN_PASSWORD` / `DEMO_PASSWORD` must be set (12+ chars) or the account is skipped with a logged warning. The login form starts empty; never prefill credentials or ship them in the bundle.
-- `frontend/src/pages/AIChat.jsx` renders failures as `role: "error"` with distinct styling so an outage can't be mistaken for a model reply. Keep that distinction.
+- `frontend/src/pages/AIChat.jsx` renders failures as `role: "error"` with distinct styling so an outage can't be mistaken for a model reply; retryable failures also carry an explicit Retry button that reuses the **original** `request_id` instead of sending a new message. Keep both. Pending submissions live in `sessionStorage` keyed by user id (`frontend/src/lib/chatRecovery.js`) and are reconciled on mount: a terminal state is read back, while an unsettled one is resubmitted with the same id so the **server** decides whether to resume it or answer `409 request_in_flight` — the browser never decides idempotency itself, and a reload of an already-`failed` message does not silently spend another attempt. Entries are cleared on logout and when another account signs in on the same tab.
 
 ## Testing
 
-`backend/tests/` are **live-server integration tests** — they make real HTTP calls. Start the backend and have MongoDB up first. 55 tests total.
+`backend/tests/` are **live-server integration tests** — they make real HTTP calls. Start the backend and have MongoDB up first.
+
+The suite **empties a database and an upload directory before and after every run**, so it refuses to start unless every guard below holds. Each failure raises `RuntimeError`; none of them skip, because a skip exits the run with status 0 and makes "never ran" look like "passed".
+
+| Guard | Requirement |
+|---|---|
+| Database name | `DB_NAME` is **exactly** `decisionlens_test`, in both processes |
+| Server agreement | `GET /api/` reports `test_db: true` |
+| Database identity | a marker written by pytest is readable by the server through its own Motor handle |
+| Upload directory | `UPLOAD_DIR` is set, resolves outside `uploads/`, has `test` in its final path segment, and is not near a filesystem root |
 
 ```powershell
 cd backend
-$env:REACT_APP_BACKEND_URL="http://localhost:8000"
-$env:ADMIN_EMAIL="admin@decisionlens.ai"
-$env:ADMIN_PASSWORD="<your 12+ char password>"
+$env:DB_NAME="decisionlens_test"
+$env:UPLOAD_DIR="uploads_test"
+$env:REACT_APP_BACKEND_URL="http://127.0.0.1:8001"
+$env:ENABLE_TEST_DB_PROBE="1"
+$env:TEST_DB_PROBE_SECRET="<token_urlsafe(32)>"   # same value in both shells
+
+# terminal 1
+python -m uvicorn server:app --host 127.0.0.1 --port 8001
+# terminal 2
 python -m pytest tests -v
 ```
 
-- Whole suite is `skipif`-gated on `ADMIN_PASSWORD` being unset. Skips are reported with an explanatory reason, not silently.
+- Generate the secret once with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and paste the same value into both shells. If it is shorter than 32 characters, or the two processes disagree, the probe answers 404 and the fixture fails before wiping anything.
+- `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `GEMINI_API_KEY` and `STRIPE_API_KEY` are read from `backend/.env` by `conftest.py` **at import**, so they no longer need exporting. That timing matters: `load_dotenv` used to run inside the session fixture, i.e. after every module-level `skipif` had been evaluated, so the suite asserted "unconfigured" paths against a configured server.
+- Modules that need the seeded admin are `skipif`-gated on `ADMIN_PASSWORD`; that is a legitimate skip, because those tests cannot execute under their intended conditions. Configuration errors — wrong database, wrong upload directory, missing probe secret — are errors, never skips.
 - `backend_test.py::TestChat` needs `GEMINI_API_KEY`; without it, the LLM happy-path tests skip and a test asserts the `503 llm_not_configured` shape instead.
+- `backend/tests/test_chat_status.py` is fully offline and in-process. It calls the handler directly with `server.db` monkeypatched, because `httpx` is absent (no `TestClient`) and Motor 3.3.1 binds to the first event loop (so each test gets its own client **and** its own loop). It never calls Gemini or Stripe, and covers the status machine, the `pending`/`processing` window, provider and persistence failures, replay selection and legacy `unknown` rows. Routing and response serialization are **not** covered there — `backend_test.py::TestChat` still does that. Its harness lives in `backend/tests/chat_harness.py` (`ChatEnv`, the `env`/`mongo` fixtures, and `no_live_provider`, which turns any real `requests.post` into an assertion failure) and is shared with the idempotency suites.
+- `backend/tests/test_chat_idempotency.py` (31 tests, fully offline) covers identity and the unchanged `{session_id, reply}` shape, replay with no dispatch and no quota, conflicts, interrupted-first-request recovery, orphaned replies, crash-between-writes rollback, in-flight vs. stale-lease recovery, retry budget, concurrent duplicates and concurrent retries, the lookup contract, and the unique index itself. `env.chat()` calls `server.chat` directly; an autouse fixture supplies a canned provider, so **no test in this module can spend a Gemini request**.
+- `backend/tests/test_chat_idempotency_http.py` (12 live-HTTP tests) covers routing, auth, 422 on a malformed `request_id`, the `409` codes (`idempotency_conflict`, `request_in_flight`, `retry_exhausted`), cross-user 404s, and the presence of the unique index in the **running** server's database. Every `POST` resolves against a pre-seeded row, so it returns before dispatch and never calls Gemini either.
 - `test_iteration3.py` Stripe tests need `STRIPE_API_KEY`; without it they skip and a test asserts checkout fails explicitly. There are **no webhook tests** — signature verification is only covered by `verify_fixes.py` and manual `stripe listen`, so re-verify by hand if you touch that handler.
 - Run a focused test: `python -m pytest tests/backend_test.py::TestAuth -v`.
 - `FRONTEND_URL` in the tests defaults to `http://localhost:3000` and **must be an allowed CORS origin**. Override `LOCAL_API_URL` only if the backend runs on a different port than the rest of the suite.
 
-### Test runs dirty the working tree
+### Test runs must not dirty the working tree
 
-`uploads/` is tracked in git (it ships with 12 committed sample files) and the backend writes there. Running the suite drops new UUID-named files into `uploads/`, which show up as untracked changes. `backend/verify_fixes.py` also resolves `UPLOAD_DIR` there. Clean them up before committing, and don't mistake them for intentional edits.
+`uploads/` is tracked in git (it ships with 12 committed sample files) and the backend writes there in normal use. The suite no longer can: `UPLOAD_DIR` is mandatory and validated before anything is deleted, so attachment writes during a run land in the test directory. If you ever see new UUID-named files in `uploads/` after a run, the upload guard was bypassed — investigate before committing.
+
+`backend/verify_fixes.py` still resolves `UPLOAD_DIR` at the repository `uploads/` by default, so running *that* does drop files there. Clean them up before committing, and don't mistake them for intentional edits.
+
+`backend/tests/test_db_safety.py` covers the guards themselves: the four probe exposure conditions, missing/wrong/non-ASCII secrets, marker visibility in both directions, upload-path verdicts, and the fail-closed behaviour of `verify_same_database`. Run it alone after touching anything in `conftest.py`.
 
 `backend/verify_fixes.py` is a standalone no-server harness (`python verify_fixes.py`, needs `MONGO_URL`/`DB_NAME`/`JWT_SECRET` set) asserting the cookie matrix, the 503 contract, and the upload path. Run it after touching auth, cookies, chat, or seed logic.
 

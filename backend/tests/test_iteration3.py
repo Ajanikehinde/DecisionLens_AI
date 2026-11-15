@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 import requests
 
+from conftest import purge_user_data
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
@@ -76,7 +78,9 @@ def fresh_user_session():
         timeout=30,
     )
     assert r.status_code in (200, 201), r.text
-    return s, email
+    uid = s.get(f"{API}/billing/me", timeout=15).json().get("user_id")
+    yield s, email
+    purge_user_data(uid)
 
 
 @pytest.fixture
@@ -195,6 +199,19 @@ class TestAttachmentMagicByteValidation:
         assert r.status_code == 200
         did = r.json()["id"]
         yield did
+        # Attachments must be removed before the decision. Both endpoints are scoped to an
+        # existing decision, and a leaked attachment row would otherwise keep counting
+        # against the shared admin account's monthly document quota, so the suite would
+        # start failing on whichever run pushed it past five.
+        try:
+            lst = admin_session.get(f"{API}/decisions/{did}/attachments", timeout=15)
+            if lst.status_code == 200:
+                for att in lst.json():
+                    admin_session.delete(
+                        f"{API}/decisions/{did}/attachments/{att['id']}", timeout=15
+                    )
+        except Exception:
+            pass
         admin_session.delete(f"{API}/decisions/{did}")
 
     def test_real_pdf_accepted(self, admin_session, decision_id):

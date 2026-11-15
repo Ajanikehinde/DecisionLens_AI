@@ -28,7 +28,7 @@ import {
   Circle,
 } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 const CATEGORY_LABEL = {
   business_strategy: "Strategy",
@@ -141,7 +141,17 @@ function StatusPill({ status }) {
   return <span className={cls}>{status}</span>;
 }
 
+/**
+ * Row click -> open the decision. Ignores clicks that started on a link or button so
+ * the title link (and the row-level delete button) keep their own behaviour.
+ */
+function openRow(e, id, navigate) {
+  if (e.target.closest("a, button")) return;
+  navigate(`/decisions/${id}`);
+}
+
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [recs, setRecs] = useState([]);
   const [error, setError] = useState(null);
@@ -466,7 +476,11 @@ export default function Dashboard() {
             </thead>
             <tbody>
               {data.recent_decisions.map((d) => (
-                <tr key={d.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                <tr
+                key={d.id}
+                onClick={(e) => openRow(e, d.id, navigate)}
+                className="border-b border-white/5 hover:bg-white/[0.02] transition-colors cursor-pointer"
+              >
                   <td className="py-3 text-slate-200">
                     <Link to={`/decisions/${d.id}`} className="hover:text-violet-300" data-testid={`recent-open-${d.id}`}>
                       {d.title}

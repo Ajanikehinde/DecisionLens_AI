@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
+import { clearAllPending, prunePendingForOtherUsers } from "@/lib/chatRecovery";
 
 const AuthContext = createContext(null);
 
@@ -18,6 +19,9 @@ export function AuthProvider({ children }) {
   async function login(email, password) {
     try {
       const r = await api.post("/auth/login", { email, password });
+      // A pending chat submission belongs to the account that created it. Signing in on a
+      // shared tab must not leave the previous account's message queued for replay.
+      prunePendingForOtherUsers(r.data?.id);
       setUser(r.data);
       return { ok: true };
     } catch (e) {
@@ -28,6 +32,7 @@ export function AuthProvider({ children }) {
   async function register(email, password, name) {
     try {
       const r = await api.post("/auth/register", { email, password, name });
+      prunePendingForOtherUsers(r.data?.id);
       setUser(r.data);
       return { ok: true };
     } catch (e) {
@@ -63,6 +68,9 @@ export function AuthProvider({ children }) {
     } catch (e) {
       // ignore - logout is best-effort
     }
+    // Nothing may outlive the session: a queued chat submission is user content, and it
+    // must not be recoverable by whoever signs in next on this tab.
+    clearAllPending();
     setUser(false);
   }
 

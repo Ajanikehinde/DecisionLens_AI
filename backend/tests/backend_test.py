@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 import requests
 
+from conftest import purge_user_data
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
@@ -77,7 +79,32 @@ def new_user_session():
                json={"email": email, "password": "TestPass@123", "name": "Test User"},
                timeout=30)
     assert r.status_code == 200, f"Register failed: {r.status_code} {r.text}"
-    return s, email
+    uid = s.get(f"{API}/auth/me", timeout=15).json().get("id")
+    yield s, email
+    # The CRUD tests below create decisions against this user. Left behind, they
+    # accumulate in the dev database every run.
+    purge_user_data(uid)
+
+
+@pytest.fixture(scope="module")
+def chat_user_session():
+    """A throwaway account for the LLM-backed chat tests.
+
+    These tests post real chat messages, and running them as the shared admin account
+    left every message behind in the database. Those rows then counted against admin's
+    monthly ai_chats_per_month quota until /chat began returning 402 and the chat tests
+    failed for a reason that had nothing to do with the model. A dedicated account lets
+    the teardown remove every message the tests produced.
+    """
+    s = requests.Session()
+    email = f"test_chat_{uuid.uuid4().hex[:8]}@example.com"
+    r = s.post(f"{API}/auth/register",
+               json={"email": email, "password": "TestPass@123", "name": "Chat Tester"},
+               timeout=30)
+    assert r.status_code == 200, f"Register failed: {r.status_code} {r.text}"
+    uid = s.get(f"{API}/auth/me", timeout=15).json().get("id")
+    yield s
+    purge_user_data(uid)
 
 
 # ---------- Auth ----------
@@ -141,10 +168,14 @@ class TestAuth:
         r = s.get(f"{API}/auth/me", timeout=15)
         assert r.status_code == 200
         assert r.json()["email"] == email
-        # seeded decisions
+        # Registration no longer seeds decisions. Seeding wrote rows backdated 0-28 days,
+        # so a random share fell inside the current quota window and consumed part of the
+        # new account's decisions_per_month allowance before the user wrote anything.
+        # A brand-new account must therefore start empty; the demo data belongs to the
+        # admin and demo accounts only.
         r2 = s.get(f"{API}/decisions", timeout=15)
         assert r2.status_code == 200
-        assert len(r2.json()) > 0
+        assert len(r2.json()) == 0
 
 
 # ---------- Decisions CRUD ----------
@@ -287,10 +318,10 @@ class TestChat:
         assert detail.get("message")
 
     @needs_llm
-    def test_chat_first_message(self, admin_session):
-        r = admin_session.post(f"{API}/chat",
-                               json={"message": "Give me a 1-line framework for choosing between two vendors."},
-                               timeout=90)
+    def test_chat_first_message(self, chat_user_session):
+        r = chat_user_session.post(f"{API}/chat",
+                                   json={"message": "Give me a 1-line framework for choosing between two vendors."},
+                                   timeout=90)
         assert r.status_code == 200, r.text
         data = r.json()
         assert data.get("reply"), "Empty reply"
@@ -300,17 +331,17 @@ class TestChat:
         TestChat.session_id = data["session_id"]
 
     @needs_llm
-    def test_chat_multi_turn(self, admin_session):
+    def test_chat_multi_turn(self, chat_user_session):
         sid = getattr(TestChat, "session_id", None)
         assert sid, "No session id from previous test"
-        r = admin_session.post(f"{API}/chat",
-                               json={"session_id": sid, "message": "Now expand point 1 in 2 sentences."},
-                               timeout=90)
+        r = chat_user_session.post(f"{API}/chat",
+                                   json={"session_id": sid, "message": "Now expand point 1 in 2 sentences."},
+                                   timeout=90)
         assert r.status_code == 200
         assert r.json().get("reply")
 
         # history endpoint
-        h = admin_session.get(f"{API}/chat/{sid}", timeout=15)
+        h = chat_user_session.get(f"{API}/chat/{sid}", timeout=15)
         assert h.status_code == 200
         msgs = h.json()
         assert len(msgs) >= 4  # 2 user + 2 assistant

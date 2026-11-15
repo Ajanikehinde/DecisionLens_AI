@@ -266,29 +266,91 @@ If you need containerization you will have to author the Dockerfiles yourself.
 There is currently **no frontend test suite** - `npm test` exits with code 1 and reports
 `No tests found`. All automated coverage lives in the backend.
 
+### Running the suite
+
 The suite in `backend/tests/` consists of **live-server integration tests**: they make
-real HTTP requests to a running backend. Start the backend first, then:
+real HTTP requests to a running backend, and they **wipe a database and an upload
+directory before and after every run**. That makes a misconfigured run destructive rather
+than noisy, so four independent guards have to pass first. Any failure raises an error
+and stops the run; none of them skip, because a skip exits with status 0 and makes a
+suite that never ran look like one that passed.
 
-```bash
+| Guard | What it establishes |
+|---|---|
+| Database name | `DB_NAME` is **exactly** `decisionlens_test`, in both processes |
+| Server agreement | the server reports `test_db: true` from `GET /api/` |
+| Database identity | the server can read a random marker pytest wrote, through its own connection |
+| Upload directory | `UPLOAD_DIR` is set, outside `uploads/`, named `*test*`, and not near a filesystem root |
+
+The identity check is the one that is not obvious. A matching name only proves the two
+processes were *configured* the same way; they can still hold connections to different
+databases if one loaded a different env file. So pytest writes a marker and asks the
+running server to find it. A marker that only exists in a sibling database must come back
+as "no match", and that is tested.
+
+```powershell
 cd backend
-pip install -r requirements.txt
 
-# Point at your running API and supply the seeded admin credentials
-set REACT_APP_BACKEND_URL=http://localhost:8000
-set ADMIN_EMAIL=admin@decisionlens.ai
-set ADMIN_PASSWORD=<your 12+ char password>
+$env:DB_NAME="decisionlens_test"
+$env:UPLOAD_DIR="uploads_test"
+$env:REACT_APP_BACKEND_URL="http://127.0.0.1:8001"
 
-pytest tests -v
+# test-only identity probe; generate once and use the same value in both shells
+$env:ENABLE_TEST_DB_PROBE="1"
+$env:TEST_DB_PROBE_SECRET="<output of: python -c ""import secrets;print(secrets.token_urlsafe(32))"">"
+
+# 1. Start the backend against the test database
+python -m uvicorn server:app --host 127.0.0.1 --port 8001
+
+# 2. Run the suite against that same server
+python -m pytest tests -v
+```
+
+`$env:DB_NAME` must be set in **both** processes. `load_dotenv` does not override
+variables already present in the environment, so the value in `backend/.env` is ignored
+when you set it in the shell - which is what keeps the two processes in agreement.
+
+`$env:UPLOAD_DIR` is **required** for the suite. It redirects attachment writes into
+`uploads_test/`, which is gitignored, so tests never touch the real `uploads/` directory
+and its committed sample files. The value is resolved and validated before anything is
+created or deleted; a path inside `uploads/` is rejected outright.
+
+`ENABLE_TEST_DB_PROBE` enables `POST /api/__test/db-identity`, which is hidden from the
+OpenAPI schema and returns the same `404` as an unmatched route unless every condition
+holds. It is additionally gated on `DB_NAME` being exactly `decisionlens_test`, so it
+stays inert in development and production even if the flag is left on. Leave the flag and
+the secret unset outside test runs, and never commit the secret.
+
+Before each session the suite empties the test database and re-provisions it using the
+application's own `seed_users()`, so the indexes the tests exercise are the same ones
+production creates and cannot drift. After the session it empties it again.
+
+To work on the app normally, drop `DB_NAME`, `UPLOAD_DIR` and the probe variables and
+restart the server:
+
+```powershell
+Remove-Item Env:DB_NAME
+Remove-Item Env:UPLOAD_DIR
+Remove-Item Env:ENABLE_TEST_DB_PROBE
+Remove-Item Env:TEST_DB_PROBE_SECRET
+python -m uvicorn server:app --port 8001
 ```
 
 Notes:
 
-- If `ADMIN_PASSWORD` is unset the entire suite is skipped with an explanatory reason.
+- Modules that need the seeded admin account still **skip** when `ADMIN_PASSWORD` is
+  unset: those tests genuinely cannot execute without credentials. Configuration
+  problems - wrong database, wrong upload directory, missing probe secret - are errors.
 - Chat tests are skipped unless `GEMINI_API_KEY` is set; in their place a test asserts
   that the endpoint returns `503` with code `llm_not_configured` rather than a fabricated
   reply.
 - Stripe checkout tests are skipped unless `STRIPE_API_KEY` is set.
+- The suite calls the **live** Gemini and Stripe APIs. A provider outage or rate limit will
+  fail tests for reasons unrelated to the code; mocking or recording those responses is
+  the remaining gap.
 - `tests/test_reports/` holds XML output from earlier runs.
+- `tests/test_db_safety.py` tests the guards themselves and is the module to run after
+  changing anything in `conftest.py`.
 
 ---
 

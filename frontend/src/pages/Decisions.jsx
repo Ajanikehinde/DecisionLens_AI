@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Trash2, Filter, Plus, Search, ArrowUpRight, AlertTriangle } from "lucide-react";
 import api, { formatApiError } from "@/lib/api";
 
@@ -16,7 +16,17 @@ function RiskPill({ risk }) {
   return <span className={cls}>{risk}</span>;
 }
 
+/**
+ * Row click -> open the decision. Ignores clicks that started on a link or button so
+ * the title link (and the row-level delete button) keep their own behaviour.
+ */
+function openRow(e, id, navigate) {
+  if (e.target.closest("a, button")) return;
+  navigate(`/decisions/${id}`);
+}
+
 export default function Decisions() {
+  const navigate = useNavigate();
   const [items, setItems] = useState(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
@@ -191,7 +201,8 @@ export default function Decisions() {
             {filtered.map((d) => (
               <tr
                 key={d.id}
-                className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+                onClick={(e) => openRow(e, d.id, navigate)}
+                className="border-b border-white/5 hover:bg-white/[0.02] transition-colors cursor-pointer"
                 data-testid={`decision-row-${d.id}`}
               >
                 <td className="px-5 py-3 text-slate-200 max-w-xs truncate">

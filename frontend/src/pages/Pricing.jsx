@@ -135,10 +135,8 @@ export default function Pricing() {
     setErr("");
     setLoadingTier(tierId);
     try {
-      const r = await api.post("/billing/checkout", {
-        tier: tierId,
-        origin_url: window.location.origin,
-      });
+      // No origin_url: the backend builds Stripe redirects from its own configuration.
+      const r = await api.post("/billing/checkout", { tier: tierId });
       // redirect to Stripe-hosted checkout
       window.location.href = r.data.url;
     } catch (e) {
