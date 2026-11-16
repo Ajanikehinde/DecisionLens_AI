@@ -440,13 +440,25 @@ class TestRetries:
             ),
         )
 
+        # The invariant is about work and storage, not about who wins the scheduler race:
+        # exactly one provider call, one user message, one reply row.
         assert len(dispatches) == 1, "only one retry may reach the provider"
+        assert len(env.all_user_rows()) == 1, "a retry must not create a second message"
+        assert len(env.assistant_rows("race")) == 1, "and only one reply"
+
         succeeded = [r for r in results if isinstance(r, dict)]
         refused = [r for r in results if isinstance(r, HTTPException)]
-        assert len(succeeded) == 1
-        assert len(refused) == 1
-        assert refused[0].status_code == 409
-        assert refused[0].detail["code"] == "request_in_flight"
+
+        # The loser of the race either observes the turn still in flight (409) or observes
+        # it already completed and replays the stored answer (200 with the same reply).
+        # Both are correct; what must never happen is a second dispatch.
+        assert len(succeeded) + len(refused) == 2
+        assert len(succeeded) >= 1
+        for r in refused:
+            assert r.status_code == 409
+            assert r.detail["code"] == "request_in_flight"
+        for r in succeeded:
+            assert r["reply"] == "only answer"
 
         row = env.single_user_row()
         assert row["status"] == "answered"
