@@ -1138,7 +1138,7 @@ def _assert_same_request(doc: dict, body: "ChatIn") -> None:
             "idempotency_conflict",
             "This request_id was already used for a different message.",
         )
-    if False and (body.session_id or None) != (doc.get("requested_session_id") or None):
+    if (body.session_id or None) != (doc.get("requested_session_id") or None):
         raise _error(
             409,
             "idempotency_conflict",
